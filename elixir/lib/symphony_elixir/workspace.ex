@@ -296,9 +296,11 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local")
 
+    env = hook_env(issue_context)
+
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true, env: env)
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -319,7 +321,16 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    env_exports = hook_env_exports(issue_context)
+
+    wrapped_command =
+      if env_exports == [] do
+        command
+      else
+        env_exports <> " " <> command
+      end
+
+    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{wrapped_command}", timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -456,26 +467,68 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue) do
+    labels =
+      case Map.get(issue, :labels) do
+        names when is_list(names) -> Enum.join(names, ",")
+        _ -> ""
+      end
+
+    branch_name = Map.get(issue, :branch_name)
+
     %{
       issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_identifier: identifier || "issue",
+      labels: labels,
+      branch_name: branch_name
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
     %{
       issue_id: nil,
-      issue_identifier: identifier
+      issue_identifier: identifier,
+      labels: "",
+      branch_name: nil
     }
   end
 
   defp issue_context(_identifier) do
     %{
       issue_id: nil,
-      issue_identifier: "issue"
+      issue_identifier: "issue",
+      labels: "",
+      branch_name: nil
     }
   end
+
+  defp hook_env(issue_context) do
+    base = System.get_env()
+
+    vars =
+      []
+      |> maybe_put("SYMPHONY_ISSUE_IDENTIFIER", issue_context.issue_identifier)
+      |> maybe_put("SYMPHONY_ISSUE_LABELS", issue_context[:labels] || "")
+      |> maybe_put("SYMPHONY_ISSUE_BRANCH_NAME", issue_context[:branch_name])
+
+    Map.merge(base, Map.new(vars))
+  end
+
+  defp maybe_put(acc, _key, nil), do: acc
+  defp maybe_put(acc, key, value) when is_binary(value), do: [{key, value} | acc]
+
+  defp hook_env_exports(issue_context) do
+    [
+      maybe_export("SYMPHONY_ISSUE_IDENTIFIER", issue_context.issue_identifier),
+      maybe_export("SYMPHONY_ISSUE_LABELS", issue_context[:labels] || ""),
+      maybe_export("SYMPHONY_ISSUE_BRANCH_NAME", issue_context[:branch_name])
+    ]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join(" ")
+  end
+
+  defp maybe_export(_key, nil), do: ""
+  defp maybe_export(key, value) when is_binary(value), do: "#{key}=#{shell_escape(value)}"
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
     "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"

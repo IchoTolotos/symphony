@@ -1,7 +1,7 @@
 ---
 tracker:
   kind: linear
-  project_slug: "symphony-0c79b11b75ea"
+  project_slug: "symphony-work-7f5350493eab"
   active_states:
     - Todo
     - In Progress
@@ -18,8 +18,14 @@ polling:
 workspace:
   root: ~/code/symphony-workspaces
 hooks:
+  # Clone branch from Linear labels: add "marketplace" or "staging" label to pick branch. Replace URL with your repo.
   after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
+    BRANCH=main
+    case ",${SYMPHONY_ISSUE_LABELS}," in
+      *marketplace*) BRANCH=marketplace ;;
+      *staging*)     BRANCH=staging ;;
+    esac
+    git clone -b "$BRANCH" --depth 1 https://github.com/openai/symphony .
     if command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise exec -- mix deps.get
     fi

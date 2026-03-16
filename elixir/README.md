@@ -125,6 +125,9 @@ Notes:
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
+- The `after_create` hook receives `SYMPHONY_ISSUE_IDENTIFIER`, `SYMPHONY_ISSUE_LABELS` (comma-separated),
+  and `SYMPHONY_ISSUE_BRANCH_NAME` as environment variables. Use labels to pick the clone branch per issue
+  (e.g. add a "marketplace" or "staging" label and branch from `$SYMPHONY_ISSUE_LABELS` in the hook).
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
