@@ -404,8 +404,43 @@ defmodule SymphonyElixir.ExtensionsTest do
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
              "retry" => nil,
-             "logs" => %{"codex_session_logs" => []},
-             "recent_events" => [],
+             "logs" => %{
+               "codex_session_logs" => [
+                 %{
+                   "at" =>
+                     issue_payload["logs"]["codex_session_logs"] |> Enum.at(0) |> Map.fetch!("at"),
+                   "event" => "session_started",
+                   "session_id" => "thread-http",
+                   "summary" => "session started (thread-http)",
+                   "payload" => nil
+                 },
+                 %{
+                   "at" =>
+                     issue_payload["logs"]["codex_session_logs"] |> Enum.at(1) |> Map.fetch!("at"),
+                   "event" => "notification",
+                   "session_id" => "thread-http",
+                   "summary" => "reasoning update: inspect booking inbox header",
+                   "payload" => %{
+                     "method" => "codex/event/agent_reasoning",
+                     "params" => %{"msg" => %{"text" => "inspect booking inbox header"}}
+                   }
+                 }
+               ]
+             },
+             "recent_events" => [
+               %{
+                 "at" => issue_payload["recent_events"] |> Enum.at(0) |> Map.fetch!("at"),
+                 "event" => "session_started",
+                 "session_id" => "thread-http",
+                 "message" => "session started (thread-http)"
+               },
+               %{
+                 "at" => issue_payload["recent_events"] |> Enum.at(1) |> Map.fetch!("at"),
+                 "event" => "notification",
+                 "session_id" => "thread-http",
+                 "message" => "reasoning update: inspect booking inbox header"
+               }
+             ],
              "last_error" => nil,
              "tracked" => %{}
            }
@@ -684,6 +719,10 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   defp static_snapshot do
+    started_at = DateTime.utc_now()
+    first_event_at = DateTime.utc_now()
+    second_event_at = DateTime.utc_now()
+
     %{
       running: [
         %{
@@ -696,10 +735,29 @@ defmodule SymphonyElixir.ExtensionsTest do
           last_codex_message: "rendered",
           last_codex_timestamp: nil,
           last_codex_event: :notification,
+          codex_session_logs: [
+            %{
+              timestamp: first_event_at,
+              event: "session_started",
+              session_id: "thread-http",
+              summary: "session started (thread-http)",
+              payload: nil
+            },
+            %{
+              timestamp: second_event_at,
+              event: "notification",
+              session_id: "thread-http",
+              summary: "reasoning update: inspect booking inbox header",
+              payload: %{
+                "method" => "codex/event/agent_reasoning",
+                "params" => %{"msg" => %{"text" => "inspect booking inbox header"}}
+              }
+            }
+          ],
           codex_input_tokens: 4,
           codex_output_tokens: 8,
           codex_total_tokens: 12,
-          started_at: DateTime.utc_now()
+          started_at: started_at
         }
       ],
       retrying: [

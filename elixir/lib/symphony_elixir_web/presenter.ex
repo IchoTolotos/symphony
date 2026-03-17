@@ -5,6 +5,8 @@ defmodule SymphonyElixirWeb.Presenter do
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
 
+  @recent_events_limit 10
+
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
@@ -76,7 +78,7 @@ defmodule SymphonyElixirWeb.Presenter do
       running: running && running_issue_payload(running),
       retry: retry && retry_issue_payload(retry),
       logs: %{
-        codex_session_logs: []
+        codex_session_logs: codex_session_logs_payload(running)
       },
       recent_events: (running && recent_events_payload(running)) || [],
       last_error: retry && retry.error,
@@ -168,18 +170,63 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp recent_events_payload(running) do
-    [
-      %{
-        at: iso8601(running.last_codex_timestamp),
-        event: running.last_codex_event,
-        message: summarize_message(running.last_codex_message)
-      }
-    ]
-    |> Enum.reject(&is_nil(&1.at))
+    case codex_session_logs_payload(running) do
+      [] ->
+        [
+          %{
+            at: iso8601(running.last_codex_timestamp),
+            event: running.last_codex_event,
+            message: summarize_message(running.last_codex_message)
+          }
+        ]
+        |> Enum.reject(&is_nil(&1.at))
+
+      codex_session_logs ->
+        codex_session_logs
+        |> Enum.take(-@recent_events_limit)
+        |> Enum.map(fn log_entry ->
+          %{
+            at: log_entry.at,
+            event: log_entry.event,
+            session_id: log_entry.session_id,
+            message: log_entry.summary
+          }
+        end)
+    end
   end
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp codex_session_logs_payload(nil), do: []
+
+  defp codex_session_logs_payload(running) when is_map(running) do
+    running
+    |> Map.get(:codex_session_logs, [])
+    |> Enum.map(&codex_session_log_payload/1)
+  end
+
+  defp codex_session_log_payload(log_entry) when is_map(log_entry) do
+    %{
+      at: log_entry_timestamp(log_entry),
+      event: log_entry_value(log_entry, :event),
+      session_id: log_entry_value(log_entry, :session_id),
+      summary: log_entry_value(log_entry, :summary),
+      payload: log_entry_value(log_entry, :payload)
+    }
+  end
+
+  defp log_entry_timestamp(log_entry) do
+    case log_entry_value(log_entry, :timestamp) do
+      %DateTime{} = timestamp -> iso8601(timestamp)
+      timestamp when is_binary(timestamp) -> timestamp
+      _ -> nil
+    end
+  end
+
+  defp log_entry_value(log_entry, key) when is_map(log_entry) and is_atom(key) do
+    Map.get(log_entry, key) || Map.get(log_entry, Atom.to_string(key))
+  end
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()

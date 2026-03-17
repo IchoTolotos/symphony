@@ -93,11 +93,28 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.session_id == "thread-live-turn-live"
     assert snapshot_entry.turn_count == 1
     assert snapshot_entry.last_codex_timestamp == now
+    assert length(snapshot_entry.codex_session_logs) == 2
+    assert Enum.at(snapshot_entry.codex_session_logs, 0) == %{
+             timestamp: now,
+             event: "session_started",
+             session_id: "thread-live-turn-live",
+             summary: "session started (thread-live-turn-live)",
+             payload: nil
+           }
+
+    assert Enum.at(snapshot_entry.codex_session_logs, 1) == %{
+             timestamp: now,
+             event: "notification",
+             session_id: "thread-live-turn-live",
+             summary: "some-event",
+             payload: %{"method" => "some-event"}
+           }
 
     assert snapshot_entry.last_codex_message == %{
              event: :notification,
              message: %{method: "some-event"},
-             timestamp: now
+             timestamp: now,
+             session_id: "thread-live-turn-live"
            }
   end
 

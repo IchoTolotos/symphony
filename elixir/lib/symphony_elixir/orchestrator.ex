@@ -14,6 +14,8 @@ defmodule SymphonyElixir.Orchestrator do
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
+  @max_codex_session_logs 200
+  @max_codex_log_payload_chars 2_000
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -711,6 +713,7 @@ defmodule SymphonyElixir.Orchestrator do
             last_codex_message: nil,
             last_codex_timestamp: nil,
             last_codex_event: nil,
+            codex_session_logs: [],
             codex_app_server_pid: nil,
             codex_input_tokens: 0,
             codex_output_tokens: 0,
@@ -1122,6 +1125,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
+          codex_session_logs: Map.get(metadata, :codex_session_logs, []),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -1175,17 +1179,21 @@ defmodule SymphonyElixir.Orchestrator do
     codex_output_tokens = Map.get(running_entry, :codex_output_tokens, 0)
     codex_total_tokens = Map.get(running_entry, :codex_total_tokens, 0)
     codex_app_server_pid = Map.get(running_entry, :codex_app_server_pid)
+    codex_session_logs = Map.get(running_entry, :codex_session_logs, [])
     last_reported_input = Map.get(running_entry, :codex_last_reported_input_tokens, 0)
     last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
+    session_id = session_id_for_update(running_entry.session_id, update)
+    summarized_update = summarize_codex_update(update, session_id)
 
     {
       Map.merge(running_entry, %{
         last_codex_timestamp: timestamp,
-        last_codex_message: summarize_codex_update(update),
-        session_id: session_id_for_update(running_entry.session_id, update),
+        last_codex_message: summarized_update,
+        session_id: session_id,
         last_codex_event: event,
+        codex_session_logs: append_codex_session_log(codex_session_logs, summarized_update),
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
@@ -1235,12 +1243,103 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp turn_count_for_update(_existing_count, _existing_session_id, _update), do: 0
 
-  defp summarize_codex_update(update) do
-    %{
+  defp summarize_codex_update(update, session_id \\ nil) do
+    summary = %{
       event: update[:event],
       message: update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
+
+    if is_binary(session_id) and session_id != "" do
+      Map.put(summary, :session_id, session_id)
+    else
+      summary
+    end
+  end
+
+  defp append_codex_session_log(existing_logs, summarized_update) when is_list(existing_logs) do
+    next_logs = existing_logs ++ [codex_session_log_entry(summarized_update)]
+    overflow = length(next_logs) - @max_codex_session_logs
+
+    if overflow > 0 do
+      Enum.drop(next_logs, overflow)
+    else
+      next_logs
+    end
+  end
+
+  defp append_codex_session_log(_existing_logs, summarized_update) do
+    [codex_session_log_entry(summarized_update)]
+  end
+
+  defp codex_session_log_entry(%{} = summarized_update) do
+    %{
+      timestamp: summarized_update[:timestamp],
+      event: normalize_codex_log_event(summarized_update[:event]),
+      session_id: summarized_update[:session_id],
+      summary: StatusDashboard.humanize_codex_message(summarized_update),
+      payload: normalize_codex_log_payload(summarized_update[:message])
+    }
+  end
+
+  defp normalize_codex_log_event(event) when is_atom(event), do: Atom.to_string(event)
+  defp normalize_codex_log_event(event) when is_binary(event), do: event
+  defp normalize_codex_log_event(nil), do: nil
+
+  defp normalize_codex_log_event(event) do
+    event
+    |> inspect(limit: 20)
+    |> truncate_codex_log_string()
+  end
+
+  defp normalize_codex_log_payload(nil), do: nil
+  defp normalize_codex_log_payload(value) when is_boolean(value) or is_number(value), do: value
+
+  defp normalize_codex_log_payload(value) when is_binary(value) do
+    value
+    |> sanitize_codex_log_string()
+    |> truncate_codex_log_string()
+  end
+
+  defp normalize_codex_log_payload(%DateTime{} = value), do: DateTime.to_iso8601(value)
+
+  defp normalize_codex_log_payload(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp normalize_codex_log_payload(value) when is_list(value) do
+    Enum.map(value, &normalize_codex_log_payload/1)
+  end
+
+  defp normalize_codex_log_payload(%{__struct__: _} = value) do
+    value
+    |> inspect(limit: 20)
+    |> truncate_codex_log_string()
+  end
+
+  defp normalize_codex_log_payload(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, nested}, acc ->
+      Map.put(acc, to_string(key), normalize_codex_log_payload(nested))
+    end)
+  end
+
+  defp normalize_codex_log_payload(value) do
+    value
+    |> inspect(limit: 20)
+    |> truncate_codex_log_string()
+  end
+
+  defp sanitize_codex_log_string(value) when is_binary(value) do
+    value
+    |> String.replace(~r/\x1B\[[0-9;]*[A-Za-z]/, "")
+    |> String.replace(~r/\x1B./, "")
+    |> String.replace(~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/, "")
+  end
+
+  defp truncate_codex_log_string(value) when is_binary(value) do
+    if String.length(value) > @max_codex_log_payload_chars do
+      String.slice(value, 0, @max_codex_log_payload_chars) <> "...[truncated]"
+    else
+      value
+    end
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do
