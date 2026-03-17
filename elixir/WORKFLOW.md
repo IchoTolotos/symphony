@@ -18,19 +18,40 @@ polling:
 workspace:
   root: ~/code/symphony-workspaces
 hooks:
-  # Clone branch from Linear labels: add "marketplace" or "staging" label to pick branch. Replace URL with your repo.
+  # Clone from the Linear label named branch-<branch-name>, e.g. branch-marketplace or branch-feature/feature1.
+  # Fails fast if no branch label is present or if multiple branch labels are applied.
   after_create: |
-    BRANCH=main
-    case ",${SYMPHONY_ISSUE_LABELS}," in
-      *marketplace*) BRANCH=marketplace ;;
-      *staging*)     BRANCH=staging ;;
-    esac
-    git clone -b "$BRANCH" --depth 1 https://github.com/openai/symphony .
-    if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
+    BRANCH=""
+    BRANCH_LABEL=""
+    OLD_IFS=$IFS
+    IFS=,
+    set -- ${SYMPHONY_ISSUE_LABELS:-}
+    IFS=$OLD_IFS
+    for label in "$@"; do
+      case "$label" in
+        branch-*)
+          if [ -n "$BRANCH" ]; then
+            echo "Expected exactly one branch-* label, found both '$BRANCH_LABEL' and '$label'." >&2
+            exit 1
+          fi
+          BRANCH_LABEL="$label"
+          BRANCH=${label#branch-}
+          ;;
+      esac
+    done
+    if [ -z "$BRANCH" ]; then
+      echo "Missing required branch-* label on Linear issue. Example: branch-marketplace or branch-feature/feature1." >&2
+      exit 1
     fi
+    git clone -b "$BRANCH" --depth 1 https://github.com/IchoTolotos/setscout_v05 .
+    npm install
   before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
+    branch=$(git branch --show-current 2>/dev/null)
+    if [ -n "$branch" ] && command -v gh >/dev/null 2>&1; then
+      for pr in $(gh pr list --repo IchoTolotos/setscout_v05 --head "$branch" --state open --json number -q '.[].number' 2>/dev/null); do
+        gh pr close "$pr" --repo IchoTolotos/setscout_v05 --comment "Closing because the Linear issue for branch $branch entered a terminal state without merge."
+      done
+    fi
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -58,6 +79,7 @@ Identifier: {{ issue.identifier }}
 Title: {{ issue.title }}
 Current status: {{ issue.state }}
 Labels: {{ issue.labels }}
+Base branch (from branch-* label): {{ issue.source_branch }}
 URL: {{ issue.url }}
 
 Description:
@@ -104,7 +126,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `linear`: interact with Linear.
 - `commit`: produce clean, logical commits during implementation.
 - `push`: keep remote branch current and publish updates.
-- `pull`: keep branch updated with latest `origin/main` before handoff.
+- `pull`: keep branch updated with latest `origin/{{ issue.source_branch }}` before handoff.
 - `land`: when ticket reaches `Merging`, explicitly open and follow `.codex/skills/land/SKILL.md`, which includes the `land` loop.
 
 ## Status map
@@ -133,7 +155,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - `Done` -> do nothing and shut down.
 4. Check whether a PR already exists for the current branch and whether it is closed.
    - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
-   - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
+   - Create a fresh branch from `origin/{{ issue.source_branch }}` and restart execution flow as a new attempt.
 5. For `Todo` tickets, do startup sequencing in this exact order:
    - `update_issue(..., state: "In Progress")`
    - find/create `## Codex Workpad` bootstrap comment
@@ -164,7 +186,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
     - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
 7.  Run a principal-style self-review of the plan and refine it in the comment.
 8.  Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
-9.  Run the `pull` skill to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
+9.  Run the `pull` skill to sync with latest `origin/{{ issue.source_branch }}` before any code edits, then record the pull/sync result in the workpad `Notes`.
     - Include a `pull skill evidence` note with:
       - merge source(s),
       - result (`clean` or `conflicts resolved`),
@@ -222,8 +244,8 @@ Use this only when completion is blocked by missing required tools or missing au
 6.  Re-check all acceptance criteria and close any gaps.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
-    - Ensure the GitHub PR has label `symphony` (add it if missing).
-9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
+    - Ensure the GitHub PR base branch matches `{{ issue.source_branch }}`.
+9.  Merge latest `origin/{{ issue.source_branch }}` into branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
     - Add final handoff notes (commit + validation summary) in the same workpad comment.
@@ -259,7 +281,7 @@ Use this only when completion is blocked by missing required tools or missing au
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
 3. Close the existing PR tied to the issue.
 4. Remove the existing `## Codex Workpad` comment from the issue.
-5. Create a fresh branch from `origin/main`.
+5. Create a fresh branch from `origin/{{ issue.source_branch }}`.
 6. Start over from the normal kickoff flow:
    - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
    - Create a new bootstrap `## Codex Workpad` comment.
@@ -272,13 +294,13 @@ Use this only when completion is blocked by missing required tools or missing au
 - Validation/tests are green for the latest commit.
 - PR feedback sweep is complete and no actionable comments remain.
 - PR checks are green, branch is pushed, and PR is linked on the issue.
-- Required PR metadata is present (`symphony` label).
+- PR base branch matches `{{ issue.source_branch }}`.
 - If app-touching, runtime validation/media requirements from `App runtime validation (required)` are complete.
 
 ## Guardrails
 
 - If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
+- For closed/merged branch PRs, create a new branch from `origin/{{ issue.source_branch }}` and restart from reproduction/planning as if starting fresh.
 - If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.

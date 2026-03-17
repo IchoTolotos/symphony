@@ -20,9 +20,15 @@ defmodule SymphonyElixir.Workspace do
 
       with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
-           {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
-           :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
-        {:ok, workspace}
+           {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host) do
+        case maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
+          :ok ->
+            {:ok, workspace}
+
+          {:error, reason} = error ->
+            maybe_cleanup_failed_after_create(workspace, created?, worker_host, reason)
+            error
+        end
       end
     rescue
       error in [ArgumentError, ErlangError, File.Error] ->
@@ -34,7 +40,11 @@ defmodule SymphonyElixir.Workspace do
   defp ensure_workspace(workspace, nil) do
     cond do
       File.dir?(workspace) ->
-        {:ok, workspace, false}
+        if rerun_after_create_for_local_workspace?(workspace) do
+          create_workspace(workspace)
+        else
+          {:ok, workspace, false}
+        end
 
       File.exists?(workspace) ->
         File.rm_rf!(workspace)
@@ -46,12 +56,21 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp ensure_workspace(workspace, worker_host) when is_binary(worker_host) do
+    rerun_after_create = if rerun_after_create_for_existing_workspace?(), do: "1", else: "0"
+
     script =
       [
         "set -eu",
         remote_shell_assign("workspace", workspace),
+        "rerun_after_create=#{rerun_after_create}",
         "if [ -d \"$workspace\" ]; then",
-        "  created=0",
+        "  if [ \"$rerun_after_create\" = 1 ] && [ -z \"$(ls -A \"$workspace\")\" ]; then",
+        "    rm -rf \"$workspace\"",
+        "    mkdir -p \"$workspace\"",
+        "    created=1",
+        "  else",
+        "    created=0",
+        "  fi",
         "elif [ -e \"$workspace\" ]; then",
         "  rm -rf \"$workspace\"",
         "  mkdir -p \"$workspace\"",
@@ -222,6 +241,52 @@ defmodule SymphonyElixir.Workspace do
 
       false ->
         :ok
+    end
+  end
+
+  defp maybe_cleanup_failed_after_create(_workspace, false, _worker_host, _reason), do: :ok
+
+  defp maybe_cleanup_failed_after_create(workspace, true, nil, reason) do
+    if after_create_failure?(reason) do
+      File.rm_rf(workspace)
+    end
+
+    :ok
+  end
+
+  defp maybe_cleanup_failed_after_create(workspace, true, worker_host, reason)
+       when is_binary(worker_host) do
+    if after_create_failure?(reason) do
+      script =
+        [
+          remote_shell_assign("workspace", workspace),
+          "rm -rf \"$workspace\""
+        ]
+        |> Enum.join("\n")
+
+      _ = run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms)
+    end
+
+    :ok
+  end
+
+  defp after_create_failure?({:workspace_hook_failed, "after_create", _status, _output}), do: true
+  defp after_create_failure?({:workspace_hook_timeout, "after_create", _timeout_ms}), do: true
+  defp after_create_failure?(_reason), do: false
+
+  defp rerun_after_create_for_existing_workspace? do
+    not is_nil(Config.settings!().hooks.after_create)
+  end
+
+  defp rerun_after_create_for_local_workspace?(workspace) do
+    rerun_after_create_for_existing_workspace?() and empty_directory?(workspace)
+  end
+
+  defp empty_directory?(workspace) do
+    case File.ls(workspace) do
+      {:ok, []} -> true
+      {:ok, _entries} -> false
+      {:error, _reason} -> false
     end
   end
 

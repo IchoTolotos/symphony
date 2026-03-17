@@ -14,11 +14,17 @@ defmodule SymphonyElixir.PromptBuilder do
       |> prompt_template!()
       |> parse_template!()
 
+    issue_map =
+      issue
+      |> Map.from_struct()
+      |> to_solid_map()
+      |> Map.put("source_branch", source_branch_from_labels(issue))
+
     template
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
+        "issue" => issue_map
       },
       @render_opts
     )
@@ -53,6 +59,23 @@ defmodule SymphonyElixir.PromptBuilder do
   defp to_solid_value(value) when is_map(value), do: to_solid_map(value)
   defp to_solid_value(value) when is_list(value), do: Enum.map(value, &to_solid_value/1)
   defp to_solid_value(value), do: value
+
+  defp source_branch_from_labels(%{labels: labels}) when is_list(labels) do
+    labels
+    |> Enum.find_value("main", fn
+      label when is_binary(label) ->
+        if String.starts_with?(label, "branch-") do
+          String.replace_prefix(label, "branch-", "")
+        else
+          nil
+        end
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp source_branch_from_labels(_), do: "main"
 
   defp default_prompt(prompt) when is_binary(prompt) do
     if String.trim(prompt) == "" do

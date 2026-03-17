@@ -1,10 +1,10 @@
 ---
 name: pull
 description:
-  Pull latest origin/main into the current local branch and resolve merge
+  Pull the latest remote base branch into the current local branch and resolve
   conflicts (aka update-branch). Use when Codex needs to sync a feature branch
-  with origin, perform a merge-based update (not rebase), and guide conflict
-  resolution best practices.
+  with its source branch, perform a merge-based update (not rebase), and guide
+  conflict resolution best practices.
 ---
 
 # Pull
@@ -12,9 +12,13 @@ description:
 ## Workflow
 
 1. Verify git status is clean or commit/stash changes before merging.
-2. Ensure rerere is enabled locally:
-   - `git config rerere.enabled true`
-   - `git config rerere.autoupdate true`
+2. Determine the base branch for this issue:
+   - Prefer the `Base branch (from branch-* label): ...` value from the issue
+     context in `WORKFLOW.md`.
+   - If a PR already exists, `gh pr view --json baseRefName -q .baseRefName`
+     is an acceptable source of truth.
+   - If neither source is available, stop and report that the base branch could
+     not be determined safely.
 3. Confirm remotes and branches:
    - Ensure the `origin` remote exists.
    - Ensure the current branch is the one to receive the merge.
@@ -23,10 +27,10 @@ description:
 5. Sync the remote feature branch first:
    - `git pull --ff-only origin $(git branch --show-current)`
    - This pulls branch updates made remotely (for example, a GitHub auto-commit)
-     before merging `origin/main`.
+     before merging `origin/<base_branch>`.
 6. Merge in order:
-   - Prefer `git -c merge.conflictstyle=zdiff3 merge origin/main` for clearer
-     conflict context.
+   - Prefer `git -c merge.conflictstyle=zdiff3 merge origin/<base_branch>` for
+     clearer conflict context.
 7. If conflicts appear, resolve them (see conflict guidance below), then:
    - `git add <files>`
    - `git commit` (or `git merge --continue` if the merge is paused)
@@ -93,8 +97,8 @@ Ask the user only when:
   equivalent technical merit and no clear local signal.
 - The merge introduces data loss, schema changes, or irreversible side effects
   without an obvious safe default.
-- The branch is not the intended target, or the remote/branch names do not exist
-  and cannot be determined locally.
+- The branch is not the intended target, or the remote/base branch names do not
+  exist and cannot be determined locally.
 
 Otherwise, proceed with the merge, explain the decision briefly in notes, and
 leave a clear, reviewable commit history.
